@@ -5,3 +5,4 @@ pycryptodome
 protobuf
 requests
 jwt
+protobuf_decoder
