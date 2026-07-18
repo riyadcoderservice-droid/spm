@@ -11,7 +11,7 @@ import aiohttp
 import uvicorn
 from datetime import datetime
 from fastapi import FastAPI, Query, HTTPException, Depends, Cookie, Response, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -26,7 +26,7 @@ except ModuleNotFoundError as e:
     print("দয়া করে নিশ্চিত করুন xC4.py, xHeaders.py এবং Pb2 ফোল্ডারটি একই ডিরেক্টরিতে আছে।\n")
     sys.exit(1)
 
-app = FastAPI(title="FREXY BADGE SPAM - Secure Multi-User Engine")
+app = FastAPI(title="FREXY BADGE SPAM - Concurrent Multi-User Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,17 +41,15 @@ USERS_FILE = "users.json"
 ADMIN_USERNAME = "frexy"
 ADMIN_PASSWORD = "frexyspam"
 
-# সেশন এবং ইউজার ভিত্তিক স্প্যাম স্টেট সংরক্ষণ
 sessions = {}  # token -> username
-user_spam_states = {}  # username -> state dict
+user_spam_states = {}  # username -> {"active_tasks": {target_uid: task_state}}
 
 def load_users():
     if not os.path.exists(USERS_FILE):
         default_users = {
             ADMIN_USERNAME: {
                 "password": ADMIN_PASSWORD,
-                "is_admin": True,
-                "history": []
+                "is_admin": True
             }
         }
         with open(USERS_FILE, "w", encoding="utf-8") as f:
@@ -67,26 +65,7 @@ def save_users(users):
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(users, f, indent=4)
 
-# ইনিশিয়াল ইউজার লোড
 users_db = load_users()
-
-# প্রতিটি ইউজারের জন্য ডিফল্ট স্প্যাম স্টেট তৈরির ফাংশন
-def get_default_state():
-    return {
-        "is_running": False,
-        "target_uid": None,
-        "region": "IND",
-        "total_packets": 0,
-        "success_count": 0,
-        "start_time": None,
-        "selected_badges": ["all"],
-        "fast_mode": False,
-        "auto_loop": True,
-        "current_account_index": 0,
-        "logs": [],
-        "stop_requested": False,
-        "targets_used": [] # অনধিক ২টি UID ট্র্যাকিং এর জন্য
-    }
 
 # =================== AUTHENTICATION HELPER ===================
 def get_current_user(session_token: str = Cookie(None)):
@@ -97,7 +76,7 @@ def get_current_user(session_token: str = Cookie(None)):
         )
     return sessions[session_token]
 
-# =================== GLOBAL FF APP CONFIG ===================
+# =================== GLOBAL APP CONFIG ===================
 Hr = {
     'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 11; ASUS_Z01QD Build/PI)",
     'Connection': "Keep-Alive",
@@ -150,17 +129,15 @@ def load_accounts():
 
     return accounts
 
-def add_user_log(username, message, log_type="info"):
+def add_target_log(username, target_uid, message, log_type="info"):
     timestamp = datetime.now().strftime("%H:%M:%S")
     log_entry = f"[{timestamp}] [{log_type.upper()}] {message}"
     
-    if username not in user_spam_states:
-        user_spam_states[username] = get_default_state()
-        
-    user_spam_states[username]["logs"].append(log_entry)
-    if len(user_spam_states[username]["logs"]) > 100:
-        user_spam_states[username]["logs"] = user_spam_states[username]["logs"][-100:]
-    print(f"[{username}] {log_entry}")
+    if username in user_spam_states and target_uid in user_spam_states[username]["active_tasks"]:
+        logs_list = user_spam_states[username]["active_tasks"][target_uid]["logs"]
+        logs_list.append(log_entry)
+        if len(logs_list) > 100:
+            user_spam_states[username]["active_tasks"][target_uid]["logs"] = logs_list[-100:]
 
 # =================== CRYPTO & HANDSHAKE HELPER FUNCTIONS ===================
 async def encrypted_proto(encoded_hex):
@@ -390,25 +367,27 @@ async def request_join_with_badge(target_uid, badge_value, key, iv, region="IND"
     except Exception:
         return None
 
-# =================== UNLIMITED SPAM ENGINE (MULTI-TENANT) ===================
-async def run_unlimited_spam_for_user(username: str, accounts, target_uid, region="IND"):
-    state = user_spam_states[username]
+# =================== MULTI-TASK SPAM ENGINE ===================
+async def run_unlimited_spam_for_target(username: str, target_uid: str, accounts):
+    if username not in user_spam_states or target_uid not in user_spam_states[username]["active_tasks"]:
+        return
+
+    state = user_spam_states[username]["active_tasks"][target_uid]
     state["is_running"] = True
     state["start_time"] = time.time()
     state["total_packets"] = 0
     state["success_count"] = 0
-    state["current_account_index"] = 0
     state["stop_requested"] = False
 
-    add_user_log(username, f"🚀 স্প্যাম প্রক্রিয়া সচল হয়েছে! টার্গেট: {target_uid} | সার্ভার: {region}", "success")
+    add_target_log(username, target_uid, f"🚀 স্প্যাম সংযোগ সচল হয়েছে! UID: {target_uid}", "success")
     cycle_count = 0
 
     while state["is_running"] and not state["stop_requested"]:
         cycle_count += 1
-        add_user_log(username, f"🔄 সাইকেল #{cycle_count} রান হচ্ছে...", "info")
+        add_target_log(username, target_uid, f"🔄 সাইকেল #{cycle_count} রান হচ্ছে...", "info")
 
         if not accounts:
-            add_user_log(username, "❌ অ্যাকাউন্ট কনফিগারেশন ত্রুটি: account.txt খালি।", "error")
+            add_target_log(username, target_uid, "❌ অ্যাকাউন্ট কনফিগারেশন ত্রুটি: account.txt খালি।", "error")
             state["is_running"] = False
             break
 
@@ -419,18 +398,18 @@ async def run_unlimited_spam_for_user(username: str, accounts, target_uid, regio
             bot_uid, password = accounts[idx]
             state["current_account_index"] = idx
 
-            add_user_log(username, f"[বট সেশন পরিবর্তন]: {bot_uid}", "info")
+            add_target_log(username, target_uid, f"[বট সেশন]: {bot_uid}", "info")
 
             try:
-                open_id, access_token = await GeNeRaTeAccEss(bot_uid, password)
+                open_id, access_token = await GeNeRaTeAccAccess(bot_uid, password)
                 if not open_id or not access_token:
-                    add_user_log(username, f"[-] গেস্ট সেশন ব্যর্থ: {bot_uid}", "error")
+                    add_target_log(username, target_uid, f"[-] গেস্ট সেশন ব্যর্থ: {bot_uid}", "error")
                     continue
 
                 pyl = await EncRypTMajoRLoGin(open_id, access_token)
                 login_resp = await MajorLogin(pyl)
                 if not login_resp:
-                    add_user_log(username, f"[-] সার্ভার সংযোগ ব্যর্থ: {bot_uid}", "error")
+                    add_target_log(username, target_uid, f"[-] সার্ভার সংযোগ ব্যর্থ: {bot_uid}", "error")
                     continue
 
                 auth_data = await DecRypTMajoRLoGin(login_resp)
@@ -443,7 +422,7 @@ async def run_unlimited_spam_for_user(username: str, accounts, target_uid, regio
 
                 login_raw = await GetLoginData(url, pyl, token)
                 if not login_raw:
-                    add_user_log(username, f"[-] ডাটা সিঙ্ক ব্যর্থ: {bot_uid}", "error")
+                    add_target_log(username, target_uid, f"[-] ডাটা সিঙ্ক ব্যর্থ: {bot_uid}", "error")
                     continue
 
                 login_decoded = await DecRypTLoGinDaTa(login_raw)
@@ -470,13 +449,13 @@ async def run_unlimited_spam_for_user(username: str, accounts, target_uid, regio
                         if not badge_value:
                             continue
 
-                        badge_packet = await request_join_with_badge(target_uid, badge_value, key, iv, region)
+                        badge_packet = await request_join_with_badge(target_uid, badge_value, key, iv, state["region"])
                         if badge_packet:
                             writer.write(badge_packet)
                             await writer.drain()
                             state["total_packets"] += 1
                             state["success_count"] += 1
-                            add_user_log(username, f"   [+] ব্যাজ প্রোটোকল প্রেরিত: {BADGE_NAMES.get(badge_name, badge_name)} ({bot_uid})", "success")
+                            add_target_log(username, target_uid, f"   [+] ব্যাজ প্রেরিত: {BADGE_NAMES.get(badge_name, badge_name)} ({bot_uid})", "success")
 
                         delay = 0.5 if state["fast_mode"] else 1.5
                         await asyncio.sleep(delay)
@@ -489,23 +468,21 @@ async def run_unlimited_spam_for_user(username: str, accounts, target_uid, regio
                         pass
 
             except Exception as e:
-                add_user_log(username, f"[-] বটের সকেটে সমস্যা হয়েছে: {e}", "error")
+                add_target_log(username, target_uid, f"[-] সকেটে ত্রুটি: {e}", "error")
 
             if not state["stop_requested"]:
                 await asyncio.sleep(1.0)
 
         if state["is_running"] and not state["stop_requested"]:
             if state["auto_loop"]:
-                add_user_log(username, f"✅ সাইকেল #{cycle_count} সফল। ২ সেকেন্ড বিরতির পর আবার শুরু হচ্ছে...", "info")
+                add_target_log(username, target_uid, "✅ সাইকেল সম্পন্ন। ২ সেকেন্ড বিরতির পর আবার শুরু হচ্ছে...", "info")
                 await asyncio.sleep(2.0)
             else:
-                add_user_log(username, "⏹ অটো-রিস্টার্ট নিষ্ক্রিয়। স্প্যাম স্থগিত করা হলো।", "warn")
                 state["is_running"] = False
                 break
 
     state["is_running"] = False
-    elapsed = time.time() - (state["start_time"] or time.time())
-    add_user_log(username, f"🏁 টাস্ক সমাপ্ত। মোট {state['total_packets']} প্যাকেট | সময়: {elapsed:.1f} সেকেন্ড", "info")
+    add_target_log(username, target_uid, f"🏁 স্প্যাম সেশন সমাপ্ত। মোট প্যাকেট: {state['total_packets']}", "info")
 
 # =================== REST API ENDPOINTS ===================
 
@@ -519,7 +496,7 @@ async def login(response: Response, data: dict):
         session_token = str(uuid.uuid4())
         sessions[session_token] = username
         if username not in user_spam_states:
-            user_spam_states[username] = get_default_state()
+            user_spam_states[username] = {"active_tasks": {}}
         
         response.set_cookie(key="session_token", value=session_token, httponly=True)
         return {"status": "success", "username": username, "is_admin": db[username].get("is_admin", False)}
@@ -543,8 +520,7 @@ async def get_users(current_user: str = Depends(get_current_user)):
     for uname, udata in db.items():
         user_list.append({
             "username": uname,
-            "is_admin": udata.get("is_admin", False),
-            "targets_used": udata.get("history", [])
+            "is_admin": udata.get("is_admin", False)
         })
     return user_list
 
@@ -565,8 +541,7 @@ async def create_user(data: dict, current_user: str = Depends(get_current_user))
 
     db[new_username] = {
         "password": new_password,
-        "is_admin": False,
-        "history": []
+        "is_admin": False
     }
     save_users(db)
     return {"status": "success", "message": f"ইউজার {new_username} সফলভাবে তৈরি হয়েছে।"}
@@ -579,7 +554,7 @@ async def delete_user(data: dict, current_user: str = Depends(get_current_user))
     
     target_username = data.get("username", "").strip()
     if target_username == ADMIN_USERNAME:
-        raise HTTPException(status_code=400, detail="মূল এডমিন অ্যাকাউন্ট ডিলিট করা সম্ভব নয়।")
+        raise HTTPException(status_code=400, detail="এডমিন অ্যাকাউন্ট ডিলিট করা যাবে না।")
 
     if target_username in db:
         del db[target_username]
@@ -603,92 +578,115 @@ async def start_spam(
         return {"status": "error", "message": "কোনো মেম্বার অ্যাকাউন্ট লোড নেই (account.txt খালি)"}
 
     db = load_users()
-    user_data = db.get(current_user, {})
-    history = user_data.get("history", [])
-
-    # ২ টি ভিন্ন UID লিমিট চেকিং
-    if target not in history:
-        if len(history) >= 2:
-            return {
-                "status": "error",
-                "message": f"সীমা অতিক্রম হয়েছে! আপনি সর্বোচ্চ ২টি টার্গেট UID ব্যবহার করতে পারবেন। বর্তমান UID সমূহ: {', '.join(history)}"
-            }
-        else:
-            history.append(target)
-            db[current_user]["history"] = history
-            save_users(db)
+    is_user_admin = db.get(current_user, {}).get("is_admin", False)
 
     if current_user not in user_spam_states:
-        user_spam_states[current_user] = get_default_state()
+        user_spam_states[current_user] = {"active_tasks": {}}
 
-    state = user_spam_states[current_user]
-    if state["is_running"]:
-        return {"status": "error", "message": "আপনার অ্যাকাউন্টে ইতিমধ্যেই স্প্যামিং চলমান আছে। আগে তা বন্ধ করুন।"}
+    active_tasks = user_spam_states[current_user]["active_tasks"]
 
-    selected = badges.split(",") if badges else ["all"]
-    state["selected_badges"] = selected
-    state["target_uid"] = target
-    state["region"] = region.upper()
-    state["fast_mode"] = fast_mode
-    state["stop_requested"] = False
-    state["targets_used"] = history
+    # স্প্যামিং অলরেডি রানিং কি না চেক
+    if target in active_tasks and active_tasks[target]["is_running"]:
+        return {"status": "error", "message": "এই UID-তে ইতিমধ্যেই স্প্যামিং চলমান আছে।"}
 
-    asyncio.create_task(run_unlimited_spam_for_user(current_user, accounts, target, region.upper()))
+    # এডমিন হলে আনলিমিটেড, সাধারণ ইউজার হলে সর্বোচ্চ ২টি সচল টাস্ক লিমিট চেক
+    running_count = sum(1 for t in active_tasks.values() if t["is_running"])
+    if not is_user_admin and running_count >= 2:
+        return {
+            "status": "error",
+            "message": "সীমা অতিক্রম হয়েছে! সাধারণ ব্যবহারকারীরা একসাথে সর্বোচ্চ ২টি UID-তে স্প্যাম চালাতে পারেন।"
+        }
+
+    # সেশন ডেটা ইনিশিয়ালাইজেশন
+    active_tasks[target] = {
+        "is_running": True,
+        "target_uid": target,
+        "region": region.upper(),
+        "total_packets": 0,
+        "success_count": 0,
+        "start_time": time.time(),
+        "selected_badges": badges.split(",") if badges else ["all"],
+        "fast_mode": fast_mode,
+        "auto_loop": True,
+        "current_account_index": 0,
+        "logs": [],
+        "stop_requested": False
+    }
+
+    # ব্যাকগ্রাউন্ড লুপ রান করা
+    asyncio.create_task(run_unlimited_spam_for_target(current_user, target, accounts))
 
     return {
         "status": "started",
         "target": target,
-        "region": region.upper(),
-        "badges": selected,
-        "fast_mode": fast_mode,
-        "message": "স্প্যাম প্রক্রিয়া সফলভাবে চালু করা হয়েছে!"
+        "message": f"UID {target} এ স্প্যামিং সফলভাবে শুরু হয়েছে!"
     }
 
 @app.get("/spam/stop")
-async def stop_spam(current_user: str = Depends(get_current_user)):
-    if current_user not in user_spam_states or not user_spam_states[current_user]["is_running"]:
-        return {"status": "error", "message": "আপনার সেশনে সচল কোনো টাস্ক নেই।"}
+async def stop_spam(
+    target: str = Query(...),
+    current_user: str = Depends(get_current_user)
+):
+    if current_user not in user_spam_states or target not in user_spam_states[current_user]["active_tasks"]:
+        return {"status": "error", "message": "এই UID-র জন্য কোনো সচল স্প্যাম সেশন পাওয়া যায়নি।"}
 
-    user_spam_states[current_user]["stop_requested"] = True
-    user_spam_states[current_user]["is_running"] = False
+    state = user_spam_states[current_user]["active_tasks"][target]
+    state["stop_requested"] = True
+    state["is_running"] = False
 
     return {
         "status": "stopped",
-        "total_packets": user_spam_states[current_user]["total_packets"],
-        "message": "স্প্যাম প্রক্রিয়া সফলভাবে বন্ধ করা হয়েছে।"
+        "message": f"UID {target} এর স্প্যামিং বন্ধ করা হয়েছে।"
     }
+
+@app.get("/spam/clear")
+async def clear_spam(
+    target: str = Query(...),
+    current_user: str = Depends(get_current_user)
+):
+    if current_user in user_spam_states and target in user_spam_states[current_user]["active_tasks"]:
+        task = user_spam_states[current_user]["active_tasks"][target]
+        if not task["is_running"]:
+            del user_spam_states[current_user]["active_tasks"][target]
+            return {"status": "success", "message": "সেশন হিস্ট্রি থেকে মুছে ফেলা হয়েছে।"}
+    return {"status": "error", "message": "সেশনটি মুছা সম্ভব নয় কারণ এটি এখনো সচল।"}
 
 @app.get("/spam/status")
 async def spam_status(current_user: str = Depends(get_current_user)):
     if current_user not in user_spam_states:
-        user_spam_states[current_user] = get_default_state()
+        user_spam_states[current_user] = {"active_tasks": {}}
 
-    state = user_spam_states[current_user]
-    elapsed = 0
-    if state["start_time"] and state["is_running"]:
-        elapsed = time.time() - state["start_time"]
+    active_tasks = user_spam_states[current_user]["active_tasks"]
+    tasks_data = {}
 
-    success_rate = 0
-    if state["total_packets"] > 0:
-        success_rate = (state["success_count"] / state["total_packets"]) * 100
+    for target, task in active_tasks.items():
+        elapsed = 0
+        if task["start_time"] and task["is_running"]:
+            elapsed = time.time() - task["start_time"]
+
+        success_rate = 0
+        if task["total_packets"] > 0:
+            success_rate = (task["success_count"] / task["total_packets"]) * 100
+
+        tasks_data[target] = {
+            "is_running": task["is_running"],
+            "target_uid": task["target_uid"],
+            "region": task["region"],
+            "total_packets": task["total_packets"],
+            "success_count": task["success_count"],
+            "success_rate": round(success_rate, 1),
+            "elapsed_seconds": round(elapsed, 1),
+            "fast_mode": task["fast_mode"],
+            "logs": task["logs"][-15:]
+        }
 
     db = load_users()
-    history = db.get(current_user, {}).get("history", [])
+    is_user_admin = db.get(current_user, {}).get("is_admin", False)
 
     return {
-        "is_running": state["is_running"],
-        "target_uid": state["target_uid"],
-        "region": state["region"],
-        "total_packets": state["total_packets"],
-        "success_count": state["success_count"],
-        "success_rate": round(success_rate, 1),
-        "elapsed_seconds": round(elapsed, 1),
-        "active_bots": len(load_accounts()),
-        "current_account_index": state["current_account_index"],
-        "auto_loop": state["auto_loop"],
-        "fast_mode": state["fast_mode"],
-        "logs": state["logs"][-20:],
-        "targets_used": history
+        "active_tasks": tasks_data,
+        "is_admin": is_user_admin,
+        "active_bots": len(load_accounts())
     }
 
 # =================== RENDER MASTER DASHBOARD ===================
@@ -764,10 +762,8 @@ body {
   border-radius: 30px; font-size: 0.9rem; display: flex; align-items: center; gap: 10px;
 }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #00ff88; box-shadow: 0 0 10px #00ff88; }
-.status-dot.active { background: var(--accent); box-shadow: 0 0 15px var(--accent); animation: pulse 1s infinite; }
-@keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.25)} }
 
-.main-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 25px; margin-bottom: 25px; }
+.main-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 25px; margin-bottom: 25px; }
 @media(max-width:900px){ .main-grid{grid-template-columns:1fr} }
 
 .card {
@@ -792,8 +788,8 @@ body {
 .input-field:focus { border-color: var(--secondary); box-shadow: 0 0 15px rgba(0, 240, 255, 0.2); }
 
 .btn {
-  width: 100%; padding: 14px 20px; border: none; border-radius: 10px;
-  font-family: 'Orbitron', sans-serif; font-size: 1rem; font-weight: 700; letter-spacing: 2px;
+  width: 100%; padding: 12px 18px; border: none; border-radius: 10px;
+  font-family: 'Orbitron', sans-serif; font-size: 0.9rem; font-weight: 700; letter-spacing: 2px;
   cursor: pointer; transition: all 0.3s; text-transform: uppercase; margin-top: 5px;
 }
 .btn-primary { background: linear-gradient(135deg, var(--primary), var(--primary-glow)); color: #fff; box-shadow: 0 4px 15px rgba(157, 78, 221, 0.4); }
@@ -805,17 +801,34 @@ body {
 
 .badge-selector { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; margin-bottom: 20px; }
 .badge-option {
-  padding: 10px 16px; border: 1px solid var(--border); border-radius: 8px;
-  cursor: pointer; transition: all 0.3s; font-size: 0.9rem; background: rgba(0,0,0,0.4);
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px;
+  cursor: pointer; transition: all 0.3s; font-size: 0.85rem; background: rgba(0,0,0,0.4);
 }
 .badge-option.active {
   border-color: var(--secondary); background: rgba(0, 240, 255, 0.15);
   box-shadow: 0 0 12px rgba(0, 240, 255, 0.3);
 }
 
-.stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
-.stat-box { background: rgba(0,0,0,0.4); border: 1px solid var(--border); border-radius: 12px; padding: 18px; text-align: center; }
-.stat-value { font-family: 'Orbitron', sans-serif; font-size: 1.8rem; font-weight: 700; color: var(--secondary); }
+/* সেশন কার্ডস ডিজাইন */
+.sessions-container {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; margin-bottom: 25px;
+}
+.session-card {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 14px;
+  padding: 20px; position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 15px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5); transition: border-color 0.3s, box-shadow 0.3s;
+}
+.session-card.active-session {
+  border-color: var(--secondary); box-shadow: 0 0 20px rgba(0, 240, 255, 0.2);
+}
+.session-banner {
+  width: 100%; height: auto; border-radius: 8px; border: 1.5px solid var(--primary);
+  box-shadow: 0 0 12px rgba(157, 78, 221, 0.4);
+}
+.session-stats {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: rgba(0,0,0,0.3);
+  padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);
+}
 
 .terminal {
   background: #040206; border: 1px solid var(--border); border-radius: 12px; padding: 20px;
@@ -825,27 +838,6 @@ body {
 .log-content .error { color: #ff0055; }
 .log-content .success { color: #00ffaa; }
 .log-content .info { color: #00f0ff; }
-
-.live-banner-card {
-  background: rgba(0,0,0,0.6); border: 1px solid var(--border); border-radius: 12px;
-  padding: 15px; margin-top: 20px; display: none; text-align: center;
-}
-.live-banner-card img {
-  max-width: 100%; border-radius: 8px; border: 2px solid var(--primary);
-  box-shadow: 0 0 15px rgba(157, 78, 221, 0.5);
-}
-
-.target-history {
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-top: 15px;
-}
-.history-item {
-  background: rgba(0,0,0,0.4); border: 1px solid var(--border); border-radius: 10px;
-  padding: 12px; text-align: center; position: relative;
-}
-.history-item img {
-  width: 100%; height: auto; border-radius: 6px; margin-top: 8px;
-  border: 1px solid rgba(255,255,255,0.1);
-}
 
 /* ADMIN STYLING */
 .admin-section { display: none; margin-top: 25px; }
@@ -890,7 +882,7 @@ body {
     <div class="subtitle">Secure Anti-Spam Control System</div>
     <div class="status-bar">
       <div class="status-pill"><span class="status-dot"></span><span>ব্যবহারকারী: <strong id="currentUsername" style="color:var(--secondary);">Guest</strong></span></div>
-      <div class="status-pill"><span id="taskDot" class="status-dot"></span><span>টাস্ক স্ট্যাটাস: <span id="taskText">অপেক্ষমান</span></span></div>
+      <div class="status-pill"><span>মোট একটিভ বট: <span id="activeBots" style="color:var(--accent);">0</span></span></div>
       <button class="status-pill btn-sec" style="cursor:pointer; border-radius:30px; font-size:0.8rem; padding: 4px 12px;" onclick="logout()">লগআউট</button>
     </div>
   </div>
@@ -900,12 +892,12 @@ body {
     <div class="card">
       <div class="card-title"><span>⚙️</span> প্রটোকল ম্যানেজার</div>
       <div class="input-group">
-        <label style="color:var(--secondary); font-size:0.9rem; display:block; margin-bottom:8px;">🎯 টার্গেট UID (সর্বোচ্চ ২টি অ্যাকাউন্ট ডাটাবেজে লক থাকবে)</label>
+        <label style="color:var(--secondary); font-size:0.9rem; display:block; margin-bottom:8px;">🎯 টার্গেট UID</label>
         <input type="text" class="input-field" id="targetUid" placeholder="১০০XXXXXXX">
       </div>
       
       <div class="input-group">
-        <label style="color:var(--secondary); font-size:0.9rem; display:block; margin-bottom:8px;">🌍 গ্লোবাল গেটওয়ে (রিজিয়ন)</label>
+        <label style="color:var(--secondary); font-size:0.9rem; display:block; margin-bottom:8px;">🌍 রিজিয়ন</label>
         <select class="input-field" id="region">
           <option value="IND">IND (India)</option>
           <option value="BD">BD (Bangladesh)</option>
@@ -926,47 +918,29 @@ body {
         </div>
       </div>
 
-      <div style="display:flex; gap:15px;">
-        <button class="btn btn-primary" id="startBtn" onclick="startSpam()">▶ প্রোটোকল স্টার্ট</button>
-        <button class="btn btn-danger" id="stopBtn" onclick="stopSpam()" disabled>⏹ স্টপ</button>
-      </div>
+      <div class="toggle-row" style="margin-bottom: 20px;"><span>🚀 সুপার ফাস্ট মোড (০.৫ সেকেন্ড বিরতি)</span><div class="switch" id="fastModeToggle" onclick="toggleSwitch('fastModeToggle')"></div></div>
 
-      <!-- লাইভ ব্যানার ডিসপ্লে -->
-      <div class="live-banner-card" id="liveBannerCard">
-        <div style="font-size:0.9rem; color:var(--secondary); margin-bottom:10px;">🌟 লাইভ প্লেয়ার প্রোফাইল ব্যানার</div>
-        <img id="liveBannerImg" src="" alt="ব্যানার লোড হচ্ছে...">
-      </div>
+      <button class="btn btn-primary" id="startBtn" onclick="startSpam()">▶ নতুন স্প্যাম প্রোটোকল স্টার্ট</button>
     </div>
 
-    <!-- রিয়েল-টাইম স্ট্যাটস -->
-    <div class="card">
-      <div class="card-title"><span>📊</span> লাইভ স্ট্যাটস</div>
-      <div class="stats-grid">
-        <div class="stat-box"><div class="stat-value" id="totalPackets">0</div><div style="font-size:0.8rem; margin-top:5px; color:rgba(255,255,255,0.6);">প্রেরিত প্যাকেট</div></div>
-        <div class="stat-box"><div class="stat-value" id="successRate">0%</div><div style="font-size:0.8rem; margin-top:5px; color:rgba(255,255,255,0.6);">সাকসেস রেট</div></div>
-      </div>
-
-      <div style="margin-top:20px;">
-        <div class="toggle-row"><span>🚀 সুপার ফাস্ট মোড (০.৫ সেকেন্ড বিরতি)</span><div class="switch" id="fastModeToggle" onclick="toggleSwitch('fastModeToggle')"></div></div>
-        <div class="toggle-row"><span>🔁 অটো আনলিমিটেড লুপ</span><div class="switch active" id="autoLoopToggle" onclick="toggleSwitch('autoLoopToggle')"></div></div>
+    <!-- রিয়েল-টাইম এক্টিভ সেশনস -->
+    <div class="card" style="display: flex; flex-direction: column;">
+      <div class="card-title"><span>📊</span> আপনার স্প্যাম সেশনসমূহ</div>
+      <div style="font-size:0.85rem; color:rgba(255,255,255,0.5); margin-bottom:15px;" id="limitsInfo">সাধারণ ব্যবহারকারীরা একসাথে সর্বোচ্চ ২টি UID সেশন চালাতে পারেন।</div>
+      <div id="noSessionsText" style="text-align:center; color:rgba(255,255,255,0.3); padding:40px 0;">কোনো সচল সেশন নেই।</div>
+      
+      <div class="sessions-container" id="sessionsList" style="display: grid; grid-template-columns: 1fr; gap:15px; overflow-y:auto; max-height:430px;">
+        <!-- সেশন কার্ডগুলো এখানে ডাইনামিকালি লোড হবে -->
       </div>
     </div>
   </div>
 
-  <!-- হিস্ট্রি ব্যানার সেকশন -->
-  <div class="card" style="margin-bottom:25px;">
-    <div class="card-title"><span>🖼️</span> আপনার রেজিস্টার্ড স্প্যামড UID (সর্বোচ্চ ২টি)</div>
-    <div class="target-history" id="targetHistory">
-      <!-- হিস্ট্রি আইটেম ডায়নামিকালি লোড হবে -->
-    </div>
-  </div>
-
-  <!-- সিস্টেম লগ -->
+  <!-- সিস্টেম লগ এবং পৃথক টার্মিনাল কনসোল -->
   <div class="card">
-    <div class="card-title"><span>📡</span> সেশন নেটওয়ার্ক কনসোল</div>
+    <div class="card-title" id="terminalTitle"><span>📡</span> সেশন নেটওয়ার্ক কনসোল (কোনো সেশন সিলেক্ট করুন)</div>
     <div class="terminal" id="terminal">
       <div class="log-content" id="logContent">
-        <span>সেশন ইনিশিয়ালাইজড... আপনার কমান্ডের জন্য অপেক্ষা করা হচ্ছে।</span>
+        <span>সেশন ইনিশিয়ালাইজড... কোনো সেশনের "লগ দেখুন" বাটনে ক্লিক করে লাইভ ট্র্যাকিং করুন।</span>
       </div>
     </div>
   </div>
@@ -996,11 +970,25 @@ body {
 <script>
 let activeUser = "";
 let isAdmin = false;
-let isSpamming = false;
 let selectedBadges = ["all"];
 let statusInterval = null;
+let selectedLogTarget = null; // কোন UID এর লগ স্ক্রিনে প্রদর্শিত হবে
 
-// ব্যাজ সিলেকশন লজিক
+function toggleSwitch(id) {
+  document.getElementById(id).classList.toggle('active');
+}
+
+function showToast(msg, isError=false) {
+  const cont = document.getElementById('toastContainer');
+  const div = document.createElement('div');
+  div.className = 'toast';
+  div.style.borderColor = isError ? '#ff0055' : '#00ffaa';
+  div.innerHTML = `<span style="color:${isError?'#ff0055':'#00ffaa'}; font-weight:bold;">${isError?'❌':'✅'}</span> <span style="font-size:0.9rem;">${msg}</span>`;
+  cont.appendChild(div);
+  setTimeout(() => div.remove(), 4000);
+}
+
+// ব্যাজ সিলেক্টর লজিক
 document.querySelectorAll('.badge-option').forEach(opt => {
   opt.addEventListener('click', function() {
     if (this.dataset.value === 'all') {
@@ -1018,20 +1006,6 @@ document.querySelectorAll('.badge-option').forEach(opt => {
     }
   });
 });
-
-function toggleSwitch(id) {
-  document.getElementById(id).classList.toggle('active');
-}
-
-function showToast(msg, isError=false) {
-  const cont = document.getElementById('toastContainer');
-  const div = document.createElement('div');
-  div.className = 'toast';
-  div.style.borderColor = isError ? '#ff0055' : '#00ffaa';
-  div.innerHTML = `<span style="color:${isError?'#ff0055':'#00ffaa'}; font-weight:bold;">${isError?'❌':'✅'}</span> <span style="font-size:0.9rem;">${msg}</span>`;
-  cont.appendChild(div);
-  setTimeout(() => div.remove(), 4000);
-}
 
 async function login() {
   const u = document.getElementById('authUsername').value.trim();
@@ -1054,7 +1028,10 @@ async function login() {
       
       if(isAdmin) {
         document.getElementById('adminCard').style.display = 'block';
+        document.getElementById('limitsInfo').innerText = "👑 আপনি এডমিন সেশনে আছেন। আপনি আনলিমিটেড UID তে একসাথে স্প্যাম সেশন চালাতে পারবেন!";
         loadUsers();
+      } else {
+        document.getElementById('limitsInfo').innerText = "ℹ️ আপনি সাধারণ সেশনে আছেন। একসাথে সর্বোচ্চ ২টি স্প্যাম সেশন চালাতে পারবেন।";
       }
       
       showToast("সফলভাবে লগইন করা হয়েছে।");
@@ -1083,62 +1060,87 @@ async function fetchStatus() {
     if(!res.ok) return;
     const data = await res.json();
     
-    document.getElementById('totalPackets').innerText = data.total_packets;
-    document.getElementById('successRate').innerText = data.success_rate + "%";
+    document.getElementById('activeBots').innerText = data.active_bots;
     
-    // টাস্ক স্টেট আপডেট
-    if(data.is_running) {
-      isSpamming = true;
-      document.getElementById('startBtn').disabled = true;
-      document.getElementById('stopBtn').disabled = false;
-      document.getElementById('taskDot').className = "status-dot active";
-      document.getElementById('taskText').innerText = "চলমান";
-      document.getElementById('taskText').style.color = "var(--accent)";
-      
-      // লাইভ ব্যানার প্রিভিউ লোড
-      document.getElementById('liveBannerCard').style.display = 'block';
-      document.getElementById('liveBannerImg').src = `https://nirob-free-fire-baner.vercel.app/profile?uid=${data.target_uid}`;
+    const list = document.getElementById('sessionsList');
+    const noSession = document.getElementById('noSessionsText');
+    const tasks = data.active_tasks;
+    const taskKeys = Object.keys(tasks);
+
+    if (taskKeys.length === 0) {
+      list.innerHTML = "";
+      noSession.style.display = "block";
+      return;
     } else {
-      isSpamming = false;
-      document.getElementById('startBtn').disabled = false;
-      document.getElementById('stopBtn').disabled = true;
-      document.getElementById('taskDot').className = "status-dot";
-      document.getElementById('taskText').innerText = "অপেক্ষমান";
-      document.getElementById('taskText').style.color = "";
+      noSession.style.display = "none";
     }
 
-    // লগ প্যানেল রেন্ডার
-    const logBox = document.getElementById('logContent');
-    logBox.innerHTML = "";
-    data.logs.forEach(l => {
-      const span = document.createElement('span');
-      if(l.includes("SUCCESS") || l.includes("[+]")) span.className = "success";
-      else if(l.includes("ERROR") || l.includes("[-]")) span.className = "error";
-      else span.className = "info";
-      span.innerText = l;
-      logBox.appendChild(span);
+    // উইন্ডো স্ক্রল স্টোরেজ ধরে রাখতে পূর্বের ডাইনামিক কার্ড রেন্ডার আপডেট করা
+    let htmlContent = "";
+    taskKeys.forEach(uid => {
+      const task = tasks[uid];
+      const runningStatus = task.is_running ? `<span style="color:#00ffaa; font-weight:bold;">সচল</span>` : `<span style="color:#ff0055; font-weight:bold;">বন্ধ</span>`;
+      const isSelected = (selectedLogTarget === uid) ? "active-session" : "";
+      
+      htmlContent += `
+        <div class="session-card ${isSelected}">
+          <img class="session-banner" src="https://nirob-free-fire-baner.vercel.app/profile?uid=${uid}" alt="ব্যানার লোড হচ্ছে...">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:1.1rem; font-weight:bold; color:var(--secondary);">UID: ${uid}</span>
+            <span>অবস্থা: ${runningStatus}</span>
+          </div>
+          <div class="session-stats">
+            <div>
+              <span style="font-size:0.8rem; color:rgba(255,255,255,0.5);">মোট প্রেরিত:</span>
+              <div style="font-size:1.2rem; font-weight:bold; color:#fff;">${task.total_packets}</div>
+            </div>
+            <div>
+              <span style="font-size:0.8rem; color:rgba(255,255,255,0.5);">সাকসেস রেট:</span>
+              <div style="font-size:1.2rem; font-weight:bold; color:var(--secondary);">${task.success_rate}%</div>
+            </div>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <button class="btn btn-sec" style="flex:1; margin-top:0;" onclick="selectLogTarget('${uid}')">লগ দেখুন</button>
+            ${task.is_running ? 
+              `<button class="btn btn-danger" style="flex:1; margin-top:0;" onclick="stopSpam('${uid}')">স্টপ</button>` : 
+              `<button class="btn btn-sec" style="flex:1; margin-top:0; border-color:#ff0055; color:#ff0055;" onclick="clearSession('${uid}')">মুছুন</button>`
+            }
+          </div>
+        </div>
+      `;
     });
-    const term = document.getElementById('terminal');
-    term.scrollTop = term.scrollHeight;
+    list.innerHTML = htmlContent;
 
-    // টার্গেট হিস্ট্রি ব্যানার রেন্ডার
-    const histContainer = document.getElementById('targetHistory');
-    histContainer.innerHTML = "";
-    if(data.targets_used.length === 0) {
-      histContainer.innerHTML = `<div style="grid-column:1/-1; color:rgba(255,255,255,0.4); text-align:center;">কোনো স্প্যাম রেকর্ড মেলেনি।</div>`;
-    } else {
-      data.targets_used.forEach(uid => {
-        const item = document.createElement('div');
-        item.className = 'history-item';
-        item.innerHTML = `
-          <div style="font-weight:bold; color:var(--secondary);">UID: ${uid}</div>
-          <img src="https://nirob-free-fire-baner.vercel.app/profile?uid=${uid}" alt="ব্যানার">
-        `;
-        histContainer.appendChild(item);
-      });
+    // যদি কোনো টার্গেট সিলেক্টেড থাকে তার লগ শো করা
+    if (selectedLogTarget && tasks[selectedLogTarget]) {
+      const activeTask = tasks[selectedLogTarget];
+      document.getElementById('terminalTitle').innerHTML = `<span>📡</span> সেশন নেটওয়ার্ক কনসোল (টার্গেট UID: <strong style="color:var(--secondary);">${selectedLogTarget}</strong>)`;
+      
+      const logBox = document.getElementById('logContent');
+      logBox.innerHTML = "";
+      
+      if (activeTask.logs.length === 0) {
+        logBox.innerHTML = "<span>এই সেশনে এখনো কোনো লগ তৈরি হয়নি।</span>";
+      } else {
+        activeTask.logs.forEach(l => {
+          const span = document.createElement('span');
+          if(l.includes("SUCCESS") || l.includes("[+]")) span.className = "success";
+          else if(l.includes("ERROR") || l.includes("[-]")) span.className = "error";
+          else span.className = "info";
+          span.innerText = l;
+          logBox.appendChild(span);
+        });
+      }
+      const term = document.getElementById('terminal');
+      term.scrollTop = term.scrollHeight;
     }
 
   } catch(e) {}
+}
+
+function selectLogTarget(uid) {
+  selectedLogTarget = uid;
+  showToast(`UID ${uid} এর লগ কনসোলে মাউন্ট করা হয়েছে।`);
 }
 
 async function startSpam() {
@@ -1151,29 +1153,51 @@ async function startSpam() {
   try {
     const res = await fetch(`/spam/start?target=${target}&region=${reg}&badges=${selectedBadges.join(',')}&fast_mode=${fast}`);
     const data = await res.json();
-    if(data.status === "started") {
+    if(res.ok && data.status !== "error") {
       showToast(data.message);
+      selectedLogTarget = target; // অটোফোকাস নিউ লগ
+      document.getElementById('targetUid').value = "";
       fetchStatus();
     } else {
       showToast(data.message, true);
     }
   } catch(e) {
-    showToast("স্প্যাম প্রোটোকল রিকোয়েস্ট ব্যর্থ।", true);
+    showToast("অনুরোধ ব্যর্থ হয়েছে।", true);
   }
 }
 
-async function stopSpam() {
+async function stopSpam(uid) {
   try {
-    const res = await fetch('/spam/stop');
+    const res = await fetch(`/spam/stop?target=${uid}`);
     const data = await res.json();
-    if(data.status === "stopped") {
+    if(res.ok && data.status !== "error") {
       showToast(data.message);
       fetchStatus();
     } else {
       showToast(data.message, true);
     }
   } catch(e) {
-    showToast("টাস্ক স্টপ রিকোয়েস্ট ব্যর্থ।", true);
+    showToast("স্টপ প্রোটোকল রিকোয়েস্ট ব্যর্থ।", true);
+  }
+}
+
+async function clearSession(uid) {
+  try {
+    const res = await fetch(`/spam/clear?target=${uid}`);
+    const data = await res.json();
+    if(res.ok && data.status === "success") {
+      showToast(data.message);
+      if (selectedLogTarget === uid) {
+        selectedLogTarget = null;
+        document.getElementById('terminalTitle').innerHTML = "<span>📡</span> সেশন নেটওয়ার্ক কনসোল (কোনো সেশন সিলেক্ট করুন)";
+        document.getElementById('logContent').innerHTML = "<span>সেশন হিস্ট্রি থেকে মুছে ফেলা হয়েছে।</span>";
+      }
+      fetchStatus();
+    } else {
+      showToast(data.message, true);
+    }
+  } catch(e) {
+    showToast("ক্লিয়ার রিকোয়েস্ট ব্যর্থ।", true);
   }
 }
 
@@ -1191,7 +1215,6 @@ async function loadUsers() {
       row.innerHTML = `
         <div>
           <strong>${u.username}</strong> ${u.is_admin ? '<span style="color:var(--accent); font-size:0.8rem;">[ADMIN]</span>' : ''}
-          <div style="font-size:0.8rem; color:rgba(255,255,255,0.5); margin-top:4px;">রেজিস্টার্ড UID: ${u.targets_used.join(', ') || 'নেই'}</div>
         </div>
         ${!u.is_admin ? `<button class="btn btn-danger" style="width:auto; padding:6px 12px; font-size:0.8rem; margin:0;" onclick="deleteUser('${u.username}')">মুছে ফেলুন</button>` : ''}
       `;
@@ -1251,7 +1274,7 @@ async function deleteUser(username) {
 # =================== RUNNER ===================
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("🔮 FREXY BADGE SPAM ENGINE - ACTIVATED")
+    print("🔮 FREXY BADGE SPAM ENGINE - CONCURRENT MULTI-USER ACTIVATED")
     print("📡 Server running on: http://0.0.0.0:5000")
     print("="*60 + "\n")
     uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=False)
