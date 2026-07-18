@@ -3,3 +3,4 @@ uvicorn
 aiohttp
 pycryptodome
 protobuf
+requests
