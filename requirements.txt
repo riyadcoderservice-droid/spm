@@ -4,3 +4,4 @@ aiohttp
 pycryptodome
 protobuf
 requests
+jwt
