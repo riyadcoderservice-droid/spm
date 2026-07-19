@@ -1,6 +1,6 @@
-# ==========================================
-# FILE: main.py
-# ==========================================
+# ==============================================================================
+# FILE: main.py (Combined & Enhanced Session-Based Spam Dashboard with Auto-Rotation)
+# ==============================================================================
 import asyncio
 import os
 import sys
@@ -19,7 +19,10 @@ from Crypto.Util.Padding import pad
 
 # Project module imports
 try:
-    from xC4 import CrEaTe_ProTo, GeneRaTePk, EnC_Uid, DecodE_HeX, xBunnEr
+    from xC4 import (
+        CrEaTe_ProTo, GeneRaTePk, EnC_Uid, DecodE_HeX, xBunnEr, 
+        OpEnSq, cHSq, SEnd_InV, ExiT, EnC_PacKeT
+    )
     from xHeaders import Ua
     from Pb2 import MajoRLoGinrEs_pb2, PorTs_pb2, MajoRLoGinrEq_pb2
 except ModuleNotFoundError as e:
@@ -27,7 +30,7 @@ except ModuleNotFoundError as e:
     print("Ensure xC4.py, xHeaders.py, and Pb2 folder are in the same directory.\n")
     sys.exit(1)
 
-app = FastAPI(title="FREXY ULTRA SPAM - Dashboard")
+app = FastAPI(title="FREXY ULTRA SPAM & INVITER - Dashboard")
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,6 +42,7 @@ app.add_middleware(
 
 # =================== DATABASE & STATE CONFIGURATION ===================
 USERS_FILE = "users.json"
+ROTATION_FILE = "account_rotation.json"
 user_states = {}
 
 def load_users():
@@ -78,16 +82,7 @@ def add_user_log(username: str, message: str, log_type="info"):
         state["logs"] = state["logs"][-150:]
     print(f"[{username}] {log_entry}")
 
-# =================== AUTHENTICATION DEPENDENCY ===================
-def get_current_user(session_user: str = Cookie(None)):
-    if not session_user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not logged in")
-    users = load_users()
-    if session_user not in users:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
-    return session_user
-
-# =================== UTILITY FUNCTIONS ===================
+# =================== ACCOUNT MANAGER & 15-HOUR ROTATION ===================
 def load_accounts():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     filename = os.path.join(base_dir, "account.txt")
@@ -108,6 +103,87 @@ def load_accounts():
     except Exception as e:
         print(f"[DEBUG] Error reading account.txt: {str(e)}")
     return accounts
+
+def load_rotation():
+    if not os.path.exists(ROTATION_FILE):
+        return {"active_batch": [], "used_accounts": {}}
+    try:
+        with open(ROTATION_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"active_batch": [], "used_accounts": {}}
+
+def save_rotation(data):
+    try:
+        with open(ROTATION_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"[DEBUG] Error saving rotation: {e}")
+
+def get_or_update_active_batch(username: str = "system"):
+    """
+    Manages the 15-hour shift rotation of up to 70 accounts.
+    Retired accounts are permanently blacklisted to avoid reuse.
+    """
+    accounts = load_accounts()
+    rotation = load_rotation()
+    current_time = time.time()
+    cooldown_period = 15 * 3600  # 15 hours in seconds
+
+    active_batch = rotation.get("active_batch", [])
+    used_accounts = rotation.get("used_accounts", {})
+
+    is_expired = False
+    if active_batch:
+        started_at = active_batch[0].get("started_at", 0)
+        if current_time - started_at >= cooldown_period:
+            is_expired = True
+
+    if is_expired:
+        add_user_log(username, "⏰ 15 Hours Completed. Retiring current 70 accounts batch...", "warn")
+        for acc in active_batch:
+            used_accounts[acc["uid"]] = current_time
+        active_batch = []
+        rotation["active_batch"] = []
+        rotation["used_accounts"] = used_accounts
+        save_rotation(rotation)
+
+    if not active_batch:
+        unused = [
+            {"uid": uid, "password": pwd} for uid, pwd in accounts 
+            if uid not in used_accounts
+        ]
+        
+        new_batch = unused[:70]
+        for acc in new_batch:
+            acc["started_at"] = current_time
+        
+        active_batch = new_batch
+        rotation["active_batch"] = active_batch
+        save_rotation(rotation)
+        if new_batch:
+            add_user_log(username, f"🔄 Connected {len(new_batch)} new accounts for the next 15-hour shift.", "success")
+
+    # Count total unused accounts left in account.txt
+    remaining_unused = sum(
+        1 for uid, _ in accounts 
+        if uid not in used_accounts and uid not in [a["uid"] for a in active_batch]
+    )
+
+    # Trigger admin alert if accounts run low (< 140 accounts)
+    if remaining_unused < 140:
+        add_user_log(username, f"⚠️ WARNING: Low accounts remaining! Only {remaining_unused} unused accounts left.", "error")
+
+    return active_batch, remaining_unused
+
+# =================== AUTHENTICATION DEPENDENCY ===================
+def get_current_user(session_user: str = Cookie(None)):
+    if not session_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not logged in")
+    users = load_users()
+    if session_user not in users:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
+    return session_user
 
 # =================== HEADERS & CRYPTO CONSTANTS ===================
 Hr = {
@@ -269,7 +345,7 @@ async def xAuThSTarTuP(TarGeT, token, timestamp, key, iv):
     uid_length = len(uid_hex)
     encrypted_timestamp = await DecodE_HeX(timestamp)
     encrypted_account_token = token.encode().hex()
-    encrypted_packet = await encrypt_packet(encrypted_account_token, key, iv)
+    encrypted_packet = await EnC_PacKeT(encrypted_account_token, key, iv)
     encrypted_packet_length = hex(len(encrypted_packet) // 2)[2:]
     if uid_length == 9:
         headers = '0000000'
@@ -356,8 +432,152 @@ async def request_join_with_badge(target_uid, badge_value, key, iv, region="IND"
     except Exception:
         return None
 
-# =================== MULTI-TARGET SPAM PROCESS ENGINE ===================
-async def run_unlimited_spam(username: str, accounts, target_uid: str, region: str, badges_str: str, fast_mode: bool):
+# =================== INDIVIDUAL SPAM WORKER ===================
+async def process_single_bot_spam(username, bot_uid, password, target_uid, region, badges_str, fast_mode, target_data, state):
+    try:
+        open_id, access_token = await GeNeRaTeAccEss(bot_uid, password)
+        if not open_id or not access_token:
+            return False
+
+        pyl = await EncRypTMajoRLoGin(open_id, access_token)
+        login_resp = await MajorLogin(pyl)
+        if not login_resp:
+            return False
+
+        auth_data = await DecRypTMajoRLoGin(login_resp)
+        token = auth_data.token
+        key = auth_data.key
+        iv = auth_data.iv
+        timestamp = auth_data.timestamp
+        account_uid = auth_data.account_uid
+        url = auth_data.url
+
+        login_raw = await GetLoginData(url, pyl, token)
+        if not login_raw:
+            return False
+
+        login_decoded = await DecRypTLoGinDaTa(login_raw)
+        online_ports = login_decoded.Online_IP_Port
+        online_ip, online_port = online_ports.split(":")
+
+        auth_token = await xAuThSTarTuP(int(account_uid), token, int(timestamp), key, iv)
+
+        reader, writer = await asyncio.open_connection(online_ip, int(online_port))
+        try:
+            writer.write(bytes.fromhex(auth_token))
+            await writer.drain()
+            await asyncio.sleep(0.5)
+
+            badges_to_send = badges_str.split(",") if badges_str else ["all"]
+            if "all" in badges_to_send:
+                badges_to_send = list(BADGE_VALUES.keys())
+
+            for badge_name in badges_to_send:
+                if not target_data["is_running"] or target_data["stop_requested"]:
+                    break
+
+                badge_value = BADGE_VALUES.get(badge_name)
+                if not badge_value:
+                    continue
+
+                badge_packet = await request_join_with_badge(target_uid, badge_value, key, iv, region)
+                if badge_packet:
+                    writer.write(badge_packet)
+                    await writer.drain()
+                    target_data["total_packets"] += 1
+                    target_data["success_count"] += 1
+                    state["total_packets"] += 1
+                    state["success_count"] += 1
+                    add_user_log(username, f"   [+] Sent: {BADGE_NAMES.get(badge_name, badge_name)} (Bot: {bot_uid}) to UID: {target_uid}", "success")
+
+                delay = 0.4 if fast_mode else 1.2
+                await asyncio.sleep(delay)
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+        return True
+    except Exception as e:
+        add_user_log(username, f"[-] Bot {bot_uid} error: {e}", "error")
+        return False
+
+# =================== SQUAD INVITE WORKER ===================
+async def process_account_invite(uid, password, target_uid):
+    try:
+        open_id, access_token = await GeNeRaTeAccEss(uid, password)
+        if not open_id or not access_token:
+            print(f"❌ {uid} - Access token generation failed.")
+            return False
+        
+        PyL = await EncRypTMajoRLoGin(open_id, access_token)
+        MajoRLoGinResPonsE = await MajorLogin(PyL)
+        if not MajoRLoGinResPonsE:
+            print(f"❌ {uid} - Authentication response empty.")
+            return False
+            
+        MajoRLoGinauTh = await DecRypTMajoRLoGin(MajoRLoGinResPonsE)
+        bot_uid = MajoRLoGinauTh.account_uid
+        token = MajoRLoGinauTh.token
+        UrL = MajoRLoGinauTh.url
+        key = MajoRLoGinauTh.key
+        iv = MajoRLoGinauTh.iv
+        timestamp = MajoRLoGinauTh.timestamp
+        region = getattr(MajoRLoGinauTh, 'region', 'IND')
+        
+        LoGinDaTa = await GetLoginData(UrL, PyL, token)
+        if not LoGinDaTa:
+            print(f"❌ {uid} - Login gateway data empty.")
+            return False
+            
+        LoGinDaTaUncRypTinG = await DecRypTLoGinDaTa(LoGinDaTa)
+        OnLinePorTs = LoGinDaTaUncRypTinG.Online_IP_Port
+        OnLineiP, OnLineporT = OnLinePorTs.split(":")
+        
+        AutHToKen = await xAuThSTarTuP(int(bot_uid), token, int(timestamp), key, iv)
+        
+        reader, writer = await asyncio.open_connection(OnLineiP, int(OnLineporT))
+        try:
+            bytes_payload = bytes.fromhex(AutHToKen)
+            writer.write(bytes_payload)
+            await writer.drain()
+            await asyncio.sleep(0.5)
+            
+            PAc = await OpEnSq(key, iv, region)
+            writer.write(PAc)
+            await writer.drain()
+            await asyncio.sleep(0.3)
+            
+            C = await cHSq(5, int(target_uid), key, iv, region)
+            writer.write(C)
+            await writer.drain()
+            await asyncio.sleep(0.3)
+            
+            V = await SEnd_InV(5, int(target_uid), key, iv, region)
+            writer.write(V)
+            await writer.drain()
+            await asyncio.sleep(0.3)
+            
+            E = await ExiT(None, key, iv)
+            writer.write(E)
+            await writer.drain()
+            await asyncio.sleep(1.0)
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+        
+        print(f"✅ Account {uid} successfully invited target {target_uid}")
+        return True
+    except Exception as e:
+        print(f"❌ Error in account invite {uid}: {e}")
+        return False
+
+# =================== MULTI-TARGET CONCURRENT ROTATED SPAM ENGINE ===================
+async def run_unlimited_spam(username: str, target_uid: str, region: str, badges_str: str, fast_mode: bool):
     state = get_user_state(username)
     if target_uid not in state["active_spams"]:
         return
@@ -366,88 +586,29 @@ async def run_unlimited_spam(username: str, accounts, target_uid: str, region: s
     add_user_log(username, f"🚀 Start: {target_uid} | Region: {region}", "success")
 
     while target_data["is_running"] and not target_data["stop_requested"]:
-        if not accounts:
-            add_user_log(username, "❌ account.txt empty or loading error.", "error")
-            break
+        # Pull or update shift-based active batch of 70 accounts
+        batch, remaining_unused = get_or_update_active_batch(username)
+        if not batch:
+            add_user_log(username, "⚠️ No available accounts (all are on cooldown or empty). Retrying in 60s...", "warn")
+            await asyncio.sleep(60)
+            continue
 
-        for idx, (bot_uid, password) in enumerate(accounts):
-            if not target_data["is_running"] or target_data["stop_requested"]:
-                break
+        add_user_log(username, f"🔄 Connecting current batch of {len(batch)} accounts concurrently...", "info")
+        
+        # Deploy tasks concurrently
+        tasks = []
+        for acc in batch:
+            tasks.append(
+                process_single_bot_spam(
+                    username, acc["uid"], acc["password"], target_uid, region, badges_str, fast_mode, target_data, state
+                )
+            )
 
-            try:
-                # Fixed function name error: GeNeRaTeAccEss instead of GeNeRaTeAccAccess
-                open_id, access_token = await GeNeRaTeAccEss(bot_uid, password)
-                if not open_id or not access_token:
-                    continue
-
-                pyl = await EncRypTMajoRLoGin(open_id, access_token)
-                login_resp = await MajorLogin(pyl)
-                if not login_resp:
-                    continue
-
-                auth_data = await DecRypTMajoRLoGin(login_resp)
-                token = auth_data.token
-                key = auth_data.key
-                iv = auth_data.iv
-                timestamp = auth_data.timestamp
-                account_uid = auth_data.account_uid
-                url = auth_data.url
-
-                login_raw = await GetLoginData(url, pyl, token)
-                if not login_raw:
-                    continue
-
-                login_decoded = await DecRypTLoGinDaTa(login_raw)
-                online_ports = login_decoded.Online_IP_Port
-                online_ip, online_port = online_ports.split(":")
-
-                auth_token = await xAuThSTarTuP(int(account_uid), token, int(timestamp), key, iv)
-
-                reader, writer = await asyncio.open_connection(online_ip, int(online_port))
-                try:
-                    writer.write(bytes.fromhex(auth_token))
-                    await writer.drain()
-                    await asyncio.sleep(0.5)
-
-                    badges_to_send = badges_str.split(",") if badges_str else ["all"]
-                    if "all" in badges_to_send:
-                        badges_to_send = list(BADGE_VALUES.keys())
-
-                    for badge_name in badges_to_send:
-                        if not target_data["is_running"] or target_data["stop_requested"]:
-                            break
-
-                        badge_value = BADGE_VALUES.get(badge_name)
-                        if not badge_value:
-                            continue
-
-                        badge_packet = await request_join_with_badge(target_uid, badge_value, key, iv, region)
-                        if badge_packet:
-                            writer.write(badge_packet)
-                            await writer.drain()
-                            target_data["total_packets"] += 1
-                            target_data["success_count"] += 1
-                            state["total_packets"] += 1
-                            state["success_count"] += 1
-                            add_user_log(username, f"   [+] Sent: {BADGE_NAMES.get(badge_name, badge_name)} (Bot: {bot_uid}) to UID: {target_uid}", "success")
-
-                        delay = 0.4 if fast_mode else 1.2
-                        await asyncio.sleep(delay)
-
-                finally:
-                    writer.close()
-                    try:
-                        await writer.wait_closed()
-                    except Exception:
-                        pass
-
-            except Exception as e:
-                add_user_log(username, f"[-] Bot {bot_uid} error: {e}", "error")
-
-            if not target_data["stop_requested"]:
-                await asyncio.sleep(1.0)
-
-        await asyncio.sleep(2.0)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        
+        if not target_data["stop_requested"]:
+            # Brief sleep cycle to prevent continuous connection stress
+            await asyncio.sleep(10.0)
 
     state["active_spams"].pop(target_uid, None)
     add_user_log(username, f"⏹️ Stopped: {target_uid}", "info")
@@ -552,6 +713,12 @@ body {
 .log-line.warn { color: #ffaa00; }
 .log-line.info { color: #05d9e8; }
 
+.warning-banner {
+  background: rgba(255, 68, 68, 0.15); border: 1px solid #ff4444; color: #ff4444;
+  border-radius: 12px; padding: 15px; margin-bottom: 25px; display: none;
+  font-family: 'Orbitron', sans-serif; font-size: 0.95rem; font-weight: bold;
+}
+
 /* Target Box Cards */
 .target-list-wrapper {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 15px; margin-top: 15px;
@@ -598,11 +765,16 @@ body {
   <div id="mainDashboard" style="display: none;">
     <div class="header">
       <h1>⚡ FREXY ULTRA SPAM</h1>
-      <div class="subtitle">UNLIMITED MODE DASHBOARD</div>
+      <div class="subtitle">AUTOMATIC 15-HOUR ROTATION</div>
       <div style="margin-top: 15px;">
         <span style="color: #05d9e8; font-size: 1.1rem;">User: <span id="sessUserDisplay" style="color:var(--primary); font-weight:bold;">-</span></span>
         <button class="btn btn-secondary" onclick="handleLogout()" style="width: auto; padding: 5px 15px; font-size: 0.8rem; margin-left: 15px;">Logout</button>
       </div>
+    </div>
+
+    <!-- Global Admin Warning Alert -->
+    <div class="warning-banner" id="adminLowAccountWarning">
+      🚨 WARNING: Available account pool running low! Please add fresh accounts inside account.txt to prevent interruption.
     </div>
 
     <!-- Admin Panel Control Section -->
@@ -655,20 +827,35 @@ body {
           <span>🚀 Fast Mode (0.4s delay)</span>
           <input type="checkbox" id="fastMode" style="width:20px; height:20px; cursor:pointer;">
         </div>
-        <button class="btn btn-primary" onclick="startSpam()">▶ Start Spam</button>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-primary" onclick="startSpam()" style="flex: 1;">▶ Start Spam</button>
+          <button class="btn btn-secondary" onclick="sendQuickInvite()" style="flex: 1; border-color: #00ff88; color: #00ff88;">✉ Invite</button>
+        </div>
       </div>
 
-      <!-- Right: User Stat Display -->
+      <!-- Right: User Stat & Rotation Tracker -->
       <div class="card">
-        <div class="card-title">📊 User Stats</div>
-        <div style="display: flex; flex-direction: column; gap: 15px;">
-          <div style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 10px; border-left: 4px solid var(--primary);">
-            <div style="font-size: 0.9rem; color: rgba(255,255,255,0.6);">Total Packets Sent</div>
-            <div id="statTotalPackets" style="font-size: 2rem; font-weight: bold; color: var(--secondary);">0</div>
+        <div class="card-title">📊 Shift & User Stats</div>
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+          <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 10px; border-left: 4px solid var(--primary);">
+            <div style="font-size: 0.85rem; color: rgba(255,255,255,0.6);">Total Packets Sent</div>
+            <div id="statTotalPackets" style="font-size: 1.8rem; font-weight: bold; color: var(--secondary);">0</div>
           </div>
-          <div style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 10px; border-left: 4px solid var(--secondary);">
-            <div style="font-size: 0.9rem; color: rgba(255,255,255,0.6);">Overall Success Rate</div>
-            <div id="statSuccessRate" style="font-size: 2rem; font-weight: bold; color: var(--primary);">0%</div>
+          <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 10px; border-left: 4px solid var(--secondary);">
+            <div style="font-size: 0.85rem; color: rgba(255,255,255,0.6);">Overall Success Rate</div>
+            <div id="statSuccessRate" style="font-size: 1.8rem; font-weight: bold; color: var(--primary);">0%</div>
+          </div>
+          <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 10px; border-left: 4px solid #00ff88;">
+            <div style="font-size: 0.85rem; color: rgba(255,255,255,0.6);">Current Connected Bots</div>
+            <div id="activeConnectedBots" style="font-size: 1.8rem; font-weight: bold; color: #00ff88;">0/70</div>
+          </div>
+          <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 10px; border-left: 4px solid #ffaa00;">
+            <div style="font-size: 0.85rem; color: rgba(255,255,255,0.6);">Unused Accounts Remaining</div>
+            <div id="unusedAccountsCount" style="font-size: 1.8rem; font-weight: bold; color: #ffaa00;">0</div>
+          </div>
+          <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 10px; border-left: 4px solid #05d9e8;">
+            <div style="font-size: 0.85rem; color: rgba(255,255,255,0.6);">Time Remaining for Shift</div>
+            <div id="shiftTimeLeft" style="font-size: 1.5rem; font-weight: bold; color: #05d9e8;">--:--:--</div>
           </div>
         </div>
       </div>
@@ -760,6 +947,14 @@ function initDashboard() {
   fetchStatus();
 }
 
+function formatTime(seconds) {
+  if (seconds <= 0) return "00:00:00";
+  const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
+  const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+  const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
 async function fetchStatus() {
   if(!currentUser) return;
   try {
@@ -775,6 +970,20 @@ async function fetchStatus() {
     const rate = data.total_packets > 0 ? Math.round((data.success_count / data.total_packets) * 100) : 0;
     document.getElementById("statSuccessRate").textContent = rate + "%";
 
+    // Rotation Stats
+    document.getElementById("activeConnectedBots").textContent = data.rotation.active_count + "/70";
+    document.getElementById("unusedAccountsCount").textContent = data.rotation.remaining_unused;
+    document.getElementById("shiftTimeLeft").textContent = formatTime(data.rotation.time_left);
+
+    // Show warning banner if unused accounts < 140
+    const warningBanner = document.getElementById("adminLowAccountWarning");
+    if(data.rotation.remaining_unused < 140) {
+      warningBanner.style.display = "block";
+      warningBanner.textContent = `🚨 WARNING: Available account pool running low! Only ${data.rotation.remaining_unused} unused accounts left. Please add more fresh IDs inside account.txt.`;
+    } else {
+      warningBanner.style.display = "none";
+    }
+
     // Console logs
     const term = document.getElementById("logTerminal");
     term.innerHTML = "";
@@ -782,6 +991,7 @@ async function fetchStatus() {
       let cl = "info";
       if(l.includes("SUCCESS") || l.includes("[+]")) cl = "success";
       if(l.includes("ERROR") || l.includes("[-]")) cl = "error";
+      if(l.includes("WARNING")) cl = "warn";
       term.innerHTML += `<div class="log-line ${cl}">${l}</div>`;
     });
     term.scrollTop = term.scrollHeight;
@@ -795,7 +1005,6 @@ async function fetchStatus() {
       data.active_spams.forEach(t => {
         container.innerHTML += `
           <div class="target-card">
-            <!-- Dynamically pulling Free Fire player profile banner -->
             <img class="target-banner" src="https://nirob-free-fire-baner.vercel.app/profile?uid=${t.uid}" alt="Profile Banner" onerror="this.onerror=null; this.src='https://via.placeholder.com/300x120/151530/ffffff?text=Banner+Loading...';">
             <h4 style="color:var(--secondary); margin-bottom:5px;">UID: ${t.uid}</h4>
             <div style="font-size:0.85rem; color:rgba(255,255,255,0.7); margin-bottom:10px;">
@@ -830,6 +1039,23 @@ async function startSpam() {
     }
   } catch(e) {
     toast("Error starting spam session", "error");
+  }
+}
+
+async function sendQuickInvite() {
+  const uid = document.getElementById("targetUid").value.trim();
+  if(!uid) return toast("Please enter target UID", "error");
+  toast("Sending invites across current active shift batch...", "info");
+  try {
+    const res = await fetch(`/invite?target_uid=${uid}`);
+    const data = await res.json();
+    if(data.status === "completed") {
+      toast(`Successfully invited ${data.successful_invites}/${data.total_accounts} accounts.`);
+    } else {
+      toast(data.message, "error");
+    }
+  } catch(e) {
+    toast("Invite execution error", "error");
   }
 }
 
@@ -947,6 +1173,44 @@ async def list_users(current_user: str = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Unauthorized access.")
     return [{"username": u, "role": info.get("role", "user")} for u, info in users.items()]
 
+# Invite Endpoint from App.py (Executing across current active rotation batch)
+@app.get("/invite")
+async def invite_endpoint(target_uid: str = Query(...), current_user: str = Depends(get_current_user)):
+    if not target_uid or not target_uid.isdigit():
+        return {"status": "error", "message": "Please specify a valid numeric target_uid."}
+        
+    batch, remaining_unused = get_or_update_active_batch(current_user)
+    if not batch:
+        return {
+            "status": "error",
+            "message": "No bot accounts available. All accounts in account.txt are currently on cooldown."
+        }
+    
+    add_user_log(current_user, f"✉ Starting squad invitations for {target_uid} using {len(batch)} active shift accounts...", "info")
+    
+    # Run up to 70 squad invites concurrently
+    tasks = []
+    for acc in batch:
+        tasks.append(process_account_invite(acc["uid"], acc["password"], target_uid))
+        
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    success_count = sum(1 for r in results if r is True)
+    details = []
+    for acc, r in zip(batch, results):
+        status_str = "success" if r is True else "failed"
+        details.append({"account_uid": acc["uid"], "status": status_str})
+        
+    add_user_log(current_user, f"✉ Squad invitations finished. Success: {success_count}/{len(batch)}", "success")
+
+    return {
+        "status": "completed",
+        "target_uid": target_uid,
+        "total_accounts": len(batch),
+        "successful_invites": success_count,
+        "details": details
+    }
+
 # Spam Control APIs with Admin Limit Bypass
 @app.get("/spam/start")
 async def start_spam(
@@ -956,24 +1220,18 @@ async def start_spam(
     fast_mode: bool = Query(False, description="Fast mode"),
     current_user: str = Depends(get_current_user)
 ):
-    accounts = load_accounts()
-    if not accounts:
-        return {"status": "error", "message": "No account.txt records loaded."}
-
     users = load_users()
     is_admin = users.get(current_user, {}).get("role") == "admin"
 
     state = get_user_state(current_user)
     active_spams = state["active_spams"]
 
-    # Limit of 2 applied only to normal users, admin bypassing limit entirely
     if not is_admin and len(active_spams) >= 2:
         return {"status": "error", "message": "Limit reached: Regular users are restricted to 2 active sessions."}
 
     if target in active_spams:
         return {"status": "error", "message": "Spam session already active on this target."}
 
-    # Dynamic target insertion
     active_spams[target] = {
         "is_running": True,
         "region": region.upper(),
@@ -985,8 +1243,7 @@ async def start_spam(
         "stop_requested": False
     }
 
-    # Start independent task
-    asyncio.create_task(run_unlimited_spam(current_user, accounts, target, region.upper(), badges, fast_mode))
+    asyncio.create_task(run_unlimited_spam(current_user, target, region.upper(), badges, fast_mode))
 
     return {
         "status": "started",
@@ -1026,19 +1283,33 @@ async def spam_status(current_user: str = Depends(get_current_user)):
             "is_running": info["is_running"]
         })
 
+    active_batch, remaining_unused = get_or_update_active_batch(current_user)
+    
+    # Calculate time remaining for the active 15-hour shift
+    time_left = 0
+    if active_batch:
+        started_at = active_batch[0].get("started_at", 0)
+        elapsed_shift = time.time() - started_at
+        time_left = max(0, (15 * 3600) - elapsed_shift)
+
     return {
         "username": current_user,
         "active_spams": targets_status,
         "total_packets": state["total_packets"],
         "success_count": state["success_count"],
-        "logs": state["logs"][-20:]
+        "logs": state["logs"][-20:],
+        "rotation": {
+            "active_count": len(active_batch),
+            "remaining_unused": remaining_unused,
+            "time_left": round(time_left)
+        }
     }
 
 # =================== APPLICATION RUNNER ===================
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("🔥 FREXY ULTRA SPAM SYSTEM STABLE")
-    print("🚀 Auto Multi-User Mode Activated")
+    print("🔥 FREXY ULTRA SPAM SYSTEM STABLE (ROTATED)")
+    print("🚀 Auto Shift-Rotation Active (70 Channels Max | 15 Hours Cooldown)")
     print("📡 Default Admin -> User: frexy | Pass: frexyspam")
     print("="*60 + "\n")
     uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=False)
