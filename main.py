@@ -1,5 +1,5 @@
 # ==============================================================================
-# FILE: main.py (Combined & Enhanced Session-Based Spam Dashboard with Auto-Rotation)
+# FILE: main.py (Combined & Enhanced Session-Based Spam Dashboard with Independent Bot Loops)
 # ==============================================================================
 import asyncio
 import os
@@ -104,29 +104,25 @@ def load_accounts():
         print(f"[DEBUG] Error reading account.txt: {str(e)}")
     return accounts
 
-def load_rotation():
-    if not os.path.exists(ROTATION_FILE):
+def load_cooldowns():
+    if not os.path.exists(COOLDOWN_FILE):
         return {"active_batch": [], "used_accounts": {}}
     try:
-        with open(ROTATION_FILE, "r", encoding="utf-8") as f:
+        with open(COOLDOWN_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {"active_batch": [], "used_accounts": {}}
 
-def save_rotation(data):
+def save_cooldowns(cooldowns):
     try:
-        with open(ROTATION_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
+        with open(COOLDOWN_FILE, "w", encoding="utf-8") as f:
+            json.dump(cooldowns, f, indent=4)
     except Exception as e:
-        print(f"[DEBUG] Error saving rotation: {e}")
+        print(f"[DEBUG] Error saving cooldowns: {str(e)}")
 
 def get_or_update_active_batch(username: str = "system"):
-    """
-    Manages the 15-hour shift rotation of up to 70 accounts.
-    Retired accounts are permanently blacklisted to avoid reuse.
-    """
     accounts = load_accounts()
-    rotation = load_rotation()
+    rotation = load_cooldowns()
     current_time = time.time()
     cooldown_period = 15 * 3600  # 15 hours in seconds
 
@@ -140,13 +136,13 @@ def get_or_update_active_batch(username: str = "system"):
             is_expired = True
 
     if is_expired:
-        add_user_log(username, "⏰ 15 Hours Completed. Retiring current 70 accounts batch...", "warn")
+        add_user_log(username, "⏰ 15 Hours Completed. Retiring current active batch...", "warn")
         for acc in active_batch:
             used_accounts[acc["uid"]] = current_time
         active_batch = []
         rotation["active_batch"] = []
         rotation["used_accounts"] = used_accounts
-        save_rotation(rotation)
+        save_cooldowns(rotation)
 
     if not active_batch:
         unused = [
@@ -154,25 +150,22 @@ def get_or_update_active_batch(username: str = "system"):
             if uid not in used_accounts
         ]
         
+        # Take up to 70 accounts. If only 1 is left, it will select 1 and proceed.
         new_batch = unused[:70]
         for acc in new_batch:
             acc["started_at"] = current_time
         
         active_batch = new_batch
         rotation["active_batch"] = active_batch
-        save_rotation(rotation)
+        save_cooldowns(rotation)
         if new_batch:
-            add_user_log(username, f"🔄 Connected {len(new_batch)} new accounts for the next 15-hour shift.", "success")
+            add_user_log(username, f"🔄 Shift rotation applied. Loaded {len(new_batch)} accounts.", "success")
 
-    # Count total unused accounts left in account.txt
+    # Count remaining completely unused accounts
     remaining_unused = sum(
         1 for uid, _ in accounts 
         if uid not in used_accounts and uid not in [a["uid"] for a in active_batch]
     )
-
-    # Trigger admin alert if accounts run low (< 140 accounts)
-    if remaining_unused < 140:
-        add_user_log(username, f"⚠️ WARNING: Low accounts remaining! Only {remaining_unused} unused accounts left.", "error")
 
     return active_batch, remaining_unused
 
@@ -432,89 +425,94 @@ async def request_join_with_badge(target_uid, badge_value, key, iv, region="IND"
     except Exception:
         return None
 
-# =================== INDIVIDUAL SPAM WORKER ===================
-async def process_single_bot_spam(username, bot_uid, password, target_uid, region, badges_str, fast_mode, target_data, state):
-    try:
-        open_id, access_token = await GeNeRaTeAccEss(bot_uid, password)
-        if not open_id or not access_token:
-            return False
-
-        pyl = await EncRypTMajoRLoGin(open_id, access_token)
-        login_resp = await MajorLogin(pyl)
-        if not login_resp:
-            return False
-
-        auth_data = await DecRypTMajoRLoGin(login_resp)
-        token = auth_data.token
-        key = auth_data.key
-        iv = auth_data.iv
-        timestamp = auth_data.timestamp
-        account_uid = auth_data.account_uid
-        url = auth_data.url
-
-        login_raw = await GetLoginData(url, pyl, token)
-        if not login_raw:
-            return False
-
-        login_decoded = await DecRypTLoGinDaTa(login_raw)
-        online_ports = login_decoded.Online_IP_Port
-        online_ip, online_port = online_ports.split(":")
-
-        auth_token = await xAuThSTarTuP(int(account_uid), token, int(timestamp), key, iv)
-
-        reader, writer = await asyncio.open_connection(online_ip, int(online_port))
+# =================== INDEPENDENT BOT SPAM THREAD (UNTHROTTLED LOOP) ===================
+async def bot_spam_independent_loop(username, bot_uid, password, target_uid, region, badges_str, fast_mode, target_data, state):
+    """
+    Each bot operates on its own dedicated loop.
+    Even with only 1 active bot, it executes continuous spamming without global blocking.
+    """
+    while target_data["is_running"] and not target_data["stop_requested"]:
         try:
-            writer.write(bytes.fromhex(auth_token))
-            await writer.drain()
-            await asyncio.sleep(0.5)
+            open_id, access_token = await GeNeRaTeAccEss(bot_uid, password)
+            if not open_id or not access_token:
+                await asyncio.sleep(5)  # Backoff on connection failure
+                continue
 
-            badges_to_send = badges_str.split(",") if badges_str else ["all"]
-            if "all" in badges_to_send:
-                badges_to_send = list(BADGE_VALUES.keys())
+            pyl = await EncRypTMajoRLoGin(open_id, access_token)
+            login_resp = await MajorLogin(pyl)
+            if not login_resp:
+                await asyncio.sleep(5)
+                continue
 
-            for badge_name in badges_to_send:
-                if not target_data["is_running"] or target_data["stop_requested"]:
-                    break
+            auth_data = await DecRypTMajoRLoGin(login_resp)
+            token = auth_data.token
+            key = auth_data.key
+            iv = auth_data.iv
+            timestamp = auth_data.timestamp
+            account_uid = auth_data.account_uid
+            url = auth_data.url
 
-                badge_value = BADGE_VALUES.get(badge_name)
-                if not badge_value:
-                    continue
+            login_raw = await GetLoginData(url, pyl, token)
+            if not login_raw:
+                await asyncio.sleep(5)
+                continue
 
-                badge_packet = await request_join_with_badge(target_uid, badge_value, key, iv, region)
-                if badge_packet:
-                    writer.write(badge_packet)
-                    await writer.drain()
-                    target_data["total_packets"] += 1
-                    target_data["success_count"] += 1
-                    state["total_packets"] += 1
-                    state["success_count"] += 1
-                    add_user_log(username, f"   [+] Sent: {BADGE_NAMES.get(badge_name, badge_name)} (Bot: {bot_uid}) to UID: {target_uid}", "success")
+            login_decoded = await DecRypTLoGinDaTa(login_raw)
+            online_ports = login_decoded.Online_IP_Port
+            online_ip, online_port = online_ports.split(":")
 
-                delay = 0.4 if fast_mode else 1.2
-                await asyncio.sleep(delay)
-        finally:
-            writer.close()
+            auth_token = await xAuThSTarTuP(int(account_uid), token, int(timestamp), key, iv)
+
+            reader, writer = await asyncio.open_connection(online_ip, int(online_port))
             try:
-                await writer.wait_closed()
-            except Exception:
-                pass
-        return True
-    except Exception as e:
-        add_user_log(username, f"[-] Bot {bot_uid} error: {e}", "error")
-        return False
+                writer.write(bytes.fromhex(auth_token))
+                await writer.drain()
+                await asyncio.sleep(0.5)
+
+                badges_to_send = badges_str.split(",") if badges_str else ["all"]
+                if "all" in badges_to_send:
+                    badges_to_send = list(BADGE_VALUES.keys())
+
+                for badge_name in badges_to_send:
+                    if not target_data["is_running"] or target_data["stop_requested"]:
+                        break
+
+                    badge_value = BADGE_VALUES.get(badge_name)
+                    if not badge_value:
+                        continue
+
+                    badge_packet = await request_join_with_badge(target_uid, badge_value, key, iv, region)
+                    if badge_packet:
+                        writer.write(badge_packet)
+                        await writer.drain()
+                        target_data["total_packets"] += 1
+                        target_data["success_count"] += 1
+                        state["total_packets"] += 1
+                        state["success_count"] += 1
+                        add_user_log(username, f"   [+] Sent: {BADGE_NAMES.get(badge_name, badge_name)} (Bot: {bot_uid}) to UID: {target_uid}", "success")
+
+                    delay = 0.4 if fast_mode else 1.2
+                    await asyncio.sleep(delay)
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+        except Exception as e:
+            add_user_log(username, f"[-] Bot {bot_uid} exception: {e}", "error")
+            await asyncio.sleep(5)  # Error timeout limit
 
 # =================== SQUAD INVITE WORKER ===================
 async def process_account_invite(uid, password, target_uid):
     try:
         open_id, access_token = await GeNeRaTeAccEss(uid, password)
         if not open_id or not access_token:
-            print(f"❌ {uid} - Access token generation failed.")
             return False
         
         PyL = await EncRypTMajoRLoGin(open_id, access_token)
         MajoRLoGinResPonsE = await MajorLogin(PyL)
         if not MajoRLoGinResPonsE:
-            print(f"❌ {uid} - Authentication response empty.")
             return False
             
         MajoRLoGinauTh = await DecRypTMajoRLoGin(MajoRLoGinResPonsE)
@@ -528,7 +526,6 @@ async def process_account_invite(uid, password, target_uid):
         
         LoGinDaTa = await GetLoginData(UrL, PyL, token)
         if not LoGinDaTa:
-            print(f"❌ {uid} - Login gateway data empty.")
             return False
             
         LoGinDaTaUncRypTinG = await DecRypTLoGinDaTa(LoGinDaTa)
@@ -569,14 +566,11 @@ async def process_account_invite(uid, password, target_uid):
                 await writer.wait_closed()
             except Exception:
                 pass
-        
-        print(f"✅ Account {uid} successfully invited target {target_uid}")
         return True
-    except Exception as e:
-        print(f"❌ Error in account invite {uid}: {e}")
+    except Exception:
         return False
 
-# =================== MULTI-TARGET CONCURRENT ROTATED SPAM ENGINE ===================
+# =================== SUPERVISOR LOOP FOR DYNAMIC SHIFTS ===================
 async def run_unlimited_spam(username: str, target_uid: str, region: str, badges_str: str, fast_mode: bool):
     state = get_user_state(username)
     if target_uid not in state["active_spams"]:
@@ -584,34 +578,49 @@ async def run_unlimited_spam(username: str, target_uid: str, region: str, badges
 
     target_data = state["active_spams"][target_uid]
     add_user_log(username, f"🚀 Start: {target_uid} | Region: {region}", "success")
+    
+    local_bot_tasks = {}  # bot_uid -> asyncio.Task
 
-    while target_data["is_running"] and not target_data["stop_requested"]:
-        # Pull or update shift-based active batch of 70 accounts
-        batch, remaining_unused = get_or_update_active_batch(username)
-        if not batch:
-            add_user_log(username, "⚠️ No available accounts (all are on cooldown or empty). Retrying in 60s...", "warn")
-            await asyncio.sleep(60)
-            continue
+    try:
+        while target_data["is_running"] and not target_data["stop_requested"]:
+            # Dynamically grab the active rotation batch (works smoothly even if 1 remains)
+            batch, remaining_unused = get_or_update_active_batch(username)
+            
+            if not batch:
+                add_user_log(username, "⚠️ No accounts left in database! Please update account.txt.", "warn")
+                await asyncio.sleep(10)
+                continue
 
-        add_user_log(username, f"🔄 Connecting current batch of {len(batch)} accounts concurrently...", "info")
-        
-        # Deploy tasks concurrently
-        tasks = []
-        for acc in batch:
-            tasks.append(
-                process_single_bot_spam(
-                    username, acc["uid"], acc["password"], target_uid, region, badges_str, fast_mode, target_data, state
-                )
-            )
+            active_uids = {acc["uid"] for acc in batch}
 
-        await asyncio.gather(*tasks, return_exceptions=True)
-        
-        if not target_data["stop_requested"]:
-            # Brief sleep cycle to prevent continuous connection stress
-            await asyncio.sleep(10.0)
+            # 1. Stop threads that rotated out of the current active shift
+            for bot_uid in list(local_bot_tasks.keys()):
+                if bot_uid not in active_uids:
+                    local_bot_tasks[bot_uid].cancel()
+                    del local_bot_tasks[bot_uid]
 
-    state["active_spams"].pop(target_uid, None)
-    add_user_log(username, f"⏹️ Stopped: {target_uid}", "info")
+            # 2. Start threads for newly incoming shift bots
+            for acc in batch:
+                bot_uid = acc["uid"]
+                password = acc["password"]
+                if bot_uid not in local_bot_tasks:
+                    task = asyncio.create_task(
+                        bot_spam_independent_loop(
+                            username, bot_uid, password, target_uid, region, 
+                            badges_str, fast_mode, target_data, state
+                        )
+                    )
+                    local_bot_tasks[bot_uid] = task
+
+            # Keep checking rotation or user commands every 5 seconds
+            await asyncio.sleep(5.0)
+
+    finally:
+        # Gracefully kill all sub-threads when execution halts
+        for bot_uid, task in local_bot_tasks.items():
+            task.cancel()
+        state["active_spams"].pop(target_uid, None)
+        add_user_log(username, f"⏹️ Stopped: {target_uid}", "info")
 
 # =================== HTTP CONTROLLERS & ENDPOINTS ===================
 
@@ -975,7 +984,7 @@ async function fetchStatus() {
     document.getElementById("unusedAccountsCount").textContent = data.rotation.remaining_unused;
     document.getElementById("shiftTimeLeft").textContent = formatTime(data.rotation.time_left);
 
-    // Show warning banner if unused accounts < 140
+    // Show warning banner only if remaining unused accounts < 140
     const warningBanner = document.getElementById("adminLowAccountWarning");
     if(data.rotation.remaining_unused < 140) {
       warningBanner.style.display = "block";
@@ -1173,7 +1182,7 @@ async def list_users(current_user: str = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Unauthorized access.")
     return [{"username": u, "role": info.get("role", "user")} for u, info in users.items()]
 
-# Invite Endpoint from App.py (Executing across current active rotation batch)
+# Invite Endpoint (Executing across whatever count is in the current active rotation batch)
 @app.get("/invite")
 async def invite_endpoint(target_uid: str = Query(...), current_user: str = Depends(get_current_user)):
     if not target_uid or not target_uid.isdigit():
@@ -1188,7 +1197,6 @@ async def invite_endpoint(target_uid: str = Query(...), current_user: str = Depe
     
     add_user_log(current_user, f"✉ Starting squad invitations for {target_uid} using {len(batch)} active shift accounts...", "info")
     
-    # Run up to 70 squad invites concurrently
     tasks = []
     for acc in batch:
         tasks.append(process_account_invite(acc["uid"], acc["password"], target_uid))
@@ -1285,7 +1293,7 @@ async def spam_status(current_user: str = Depends(get_current_user)):
 
     active_batch, remaining_unused = get_or_update_active_batch(current_user)
     
-    # Calculate time remaining for the active 15-hour shift
+    # Calculate shift time remaining
     time_left = 0
     if active_batch:
         started_at = active_batch[0].get("started_at", 0)
@@ -1309,7 +1317,15 @@ async def spam_status(current_user: str = Depends(get_current_user)):
 if __name__ == "__main__":
     print("\n" + "="*60)
     print("🔥 FREXY ULTRA SPAM SYSTEM STABLE (ROTATED)")
-    print("🚀 Auto Shift-Rotation Active (70 Channels Max | 15 Hours Cooldown)")
+    print("🚀 Independent Bot Loops Active (Unthrottled Rates Enabled)")
     print("📡 Default Admin -> User: frexy | Pass: frexyspam")
     print("="*60 + "\n")
-    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=False)
+    
+    # Reading dynamic host and port from environmental variables
+    host_ip = os.getenv("HOST", "0.0.0.0")
+    try:
+        port_num = int(os.getenv("PORT", 5000))
+    except ValueError:
+        port_num = 5000
+
+    uvicorn.run("main:app", host=host_ip, port=port_num, reload=False)
