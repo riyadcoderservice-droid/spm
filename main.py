@@ -44,7 +44,7 @@ user_states = {}
 def load_users():
     if not os.path.exists(USERS_FILE):
         default_users = {
-            "frexy": {"password": "frexyspam", "role": "admin"}
+            "prime": {"password": "riyad", "role": "admin"}
         }
         with open(USERS_FILE, "w", encoding="utf-8") as f:
             json.dump(default_users, f, indent=4)
